@@ -1,0 +1,360 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// 사용자 & 인증
+// ============================================
+
+enum Role {
+  ADMIN
+  MANAGER
+  STAFF
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  password  String
+  role      Role     @default(STAFF)
+  phone     String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  inboundOrdersCreated    InboundOrder[]        @relation("CreatedBy")
+  inspections             InspectionRecord[]     @relation("Inspector")
+  reconciliationsCreated  ReconciliationSession[] @relation("ReconciliationCreator")
+  reconciliationChecks    ReconciliationItem[]   @relation("CheckedBy")
+  reconciliationApprovals ReconciliationItem[]   @relation("ApprovedBy")
+  auditLogs               AuditLog[]
+
+  @@map("users")
+}
+
+// ============================================
+// 품목 관리
+// ============================================
+
+model Category {
+  id          String     @id @default(cuid())
+  name        String
+  description String?
+  parentId    String?
+  parent      Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children    Category[] @relation("CategoryHierarchy")
+  items       Item[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@map("categories")
+}
+
+enum Unit {
+  EA
+  BOX
+  SET
+  PACK
+  BOTTLE
+  TUBE
+  ROLL
+  SHEET
+  ML
+  L
+  G
+  KG
+}
+
+model Item {
+  id             String    @id @default(cuid())
+  name           String
+  sku            String    @unique
+  categoryId     String?
+  category       Category? @relation(fields: [categoryId], references: [id])
+  unit           Unit      @default(EA)
+  description    String?
+  manufacturer   String?
+  safetyStock    Int       @default(0)
+  expiryManaged  Boolean   @default(false)
+  active         Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  // Relations
+  inventoryStocks     InventoryStock[]
+  inboundOrderItems   InboundOrderItem[]
+  outboundRecords     OutboundRecord[]
+  reconciliationItems ReconciliationItem[]
+
+  @@map("items")
+}
+
+// ============================================
+// 위치 관리
+// ============================================
+
+model StorageLocation {
+  id          String  @id @default(cuid())
+  code        String  @unique // e.g., "1F-A-03"
+  name        String
+  floor       String
+  zone        String
+  shelf       String
+  description String?
+  qrCodeData  String? // QR code encoded data
+  active      Boolean @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  inventoryStocks     InventoryStock[]
+  outboundRecords     OutboundRecord[]
+  reconciliationItems ReconciliationItem[]
+
+  @@map("storage_locations")
+}
+
+// ============================================
+// 재고
+// ============================================
+
+model InventoryStock {
+  id          String          @id @default(cuid())
+  itemId      String
+  item        Item            @relation(fields: [itemId], references: [id])
+  locationId  String
+  location    StorageLocation @relation(fields: [locationId], references: [id])
+  quantity    Int             @default(0)
+  lotNumber   String?
+  expiryDate  DateTime?
+  updatedAt   DateTime        @updatedAt
+
+  @@unique([itemId, locationId, lotNumber])
+  @@map("inventory_stocks")
+}
+
+// ============================================
+// 공급업체
+// ============================================
+
+model Supplier {
+  id          String   @id @default(cuid())
+  name        String
+  contactName String?
+  phone       String?
+  email       String?
+  address     String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  inboundOrders InboundOrder[]
+
+  @@map("suppliers")
+}
+
+// ============================================
+// 입고/검수
+// ============================================
+
+enum InboundStatus {
+  PENDING
+  INSPECTING
+  COMPLETED
+  REJECTED
+}
+
+model InboundOrder {
+  id            String        @id @default(cuid())
+  orderNumber   String        @unique
+  supplierId    String
+  supplier      Supplier      @relation(fields: [supplierId], references: [id])
+  status        InboundStatus @default(PENDING)
+  expectedDate  DateTime?
+  receivedDate  DateTime?
+  createdById   String
+  createdBy     User          @relation("CreatedBy", fields: [createdById], references: [id])
+  notes         String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  // Relations
+  items InboundOrderItem[]
+
+  @@map("inbound_orders")
+}
+
+enum InboundItemStatus {
+  PENDING
+  INSPECTING
+  PASSED
+  FAILED
+  PARTIAL
+}
+
+model InboundOrderItem {
+  id              String            @id @default(cuid())
+  inboundOrderId  String
+  inboundOrder    InboundOrder      @relation(fields: [inboundOrderId], references: [id], onDelete: Cascade)
+  itemId          String
+  item            Item              @relation(fields: [itemId], references: [id])
+  expectedQty     Int
+  receivedQty     Int?
+  locationId      String?           // Target storage location
+  lotNumber       String?
+  expiryDate      DateTime?
+  status          InboundItemStatus @default(PENDING)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // Relations
+  inspections InspectionRecord[]
+
+  @@map("inbound_order_items")
+}
+
+enum InspectionStatus {
+  PASS
+  FAIL
+  PARTIAL
+}
+
+model InspectionRecord {
+  id                  String           @id @default(cuid())
+  inboundOrderItemId  String
+  inboundOrderItem    InboundOrderItem @relation(fields: [inboundOrderItemId], references: [id], onDelete: Cascade)
+  inspectorId         String
+  inspector           User             @relation("Inspector", fields: [inspectorId], references: [id])
+  status              InspectionStatus
+  inspectedQty        Int
+  passedQty           Int
+  failedQty           Int              @default(0)
+  failReason          String?
+  notes               String?
+  inspectedAt         DateTime         @default(now())
+
+  @@map("inspection_records")
+}
+
+// ============================================
+// 출고/CRM
+// ============================================
+
+enum OutboundType {
+  CRM_SYNC
+  MANUAL
+}
+
+model OutboundRecord {
+  id              String          @id @default(cuid())
+  itemId          String
+  item            Item            @relation(fields: [itemId], references: [id])
+  locationId      String?
+  location        StorageLocation? @relation(fields: [locationId], references: [id])
+  quantity        Int
+  crmReferenceId  String?
+  crmSyncedAt     DateTime?
+  type            OutboundType    @default(MANUAL)
+  notes           String?
+  createdAt       DateTime        @default(now())
+
+  @@map("outbound_records")
+}
+
+// ============================================
+// 월말 재고 실사
+// ============================================
+
+enum ReconciliationStatus {
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model ReconciliationSession {
+  id          String               @id @default(cuid())
+  yearMonth   String               // "2026-03"
+  status      ReconciliationStatus @default(IN_PROGRESS)
+  startedAt   DateTime             @default(now())
+  completedAt DateTime?
+  createdById String
+  createdBy   User                 @relation("ReconciliationCreator", fields: [createdById], references: [id])
+  notes       String?
+
+  // Relations
+  items ReconciliationItem[]
+
+  @@unique([yearMonth])
+  @@map("reconciliation_sessions")
+}
+
+enum ReconciliationItemStatus {
+  PENDING
+  CHECKED
+  APPROVED
+  REJECTED
+}
+
+model ReconciliationItem {
+  id          String                    @id @default(cuid())
+  sessionId   String
+  session     ReconciliationSession     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  itemId      String
+  item        Item                      @relation(fields: [itemId], references: [id])
+  locationId  String
+  location    StorageLocation           @relation(fields: [locationId], references: [id])
+  systemQty   Int
+  actualQty   Int?
+  difference  Int?
+  reason      String?
+  status      ReconciliationItemStatus  @default(PENDING)
+  checkedById String?
+  checkedBy   User?                     @relation("CheckedBy", fields: [checkedById], references: [id])
+  approvedById String?
+  approvedBy  User?                     @relation("ApprovedBy", fields: [approvedById], references: [id])
+  checkedAt   DateTime?
+  approvedAt  DateTime?
+
+  @@map("reconciliation_items")
+}
+
+// ============================================
+// 감사 로그
+// ============================================
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id])
+  action     String   // CREATE, UPDATE, DELETE, INSPECT, SYNC, ADJUST
+  entityType String   // Item, InboundOrder, OutboundRecord, etc.
+  entityId   String
+  oldValue   Json?
+  newValue   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ============================================
+// 시스템 설정
+// ============================================
+
+model SystemSetting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value Json
+
+  @@map("system_settings")
+}
